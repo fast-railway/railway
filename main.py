@@ -10,7 +10,7 @@ import urllib.request
 import urllib.error
 
 # ---------------------------------------------------------
-# Environment Parsers
+# Environment Parsers & Configuration
 # ---------------------------------------------------------
 def parse_range(var_name: str, default_min: float, default_max: float):
     raw_val = os.getenv(var_name, "").strip()
@@ -28,10 +28,33 @@ def parse_range(var_name: str, default_min: float, default_max: float):
     return default_min, default_max
 
 
+def parse_referrers(var_name: str, defaults: list):
+    raw_val = os.getenv(var_name, "").strip()
+    if not raw_val:
+        return defaults
+    items = [item.strip() for item in raw_val.split(",") if item.strip()]
+    return items if items else defaults
+
+
+# ScrapingAnt Credentials & Bot Behavior
 RAW_KEYS = os.getenv("SCRAPINGANT_API_KEYS", "Key1:6f88bd467966492d932576583925b36f")
 WORKER_MIN, WORKER_MAX = parse_range("WORKER_COUNT_RANGE", 6, 8)
 GAP_MIN, GAP_MAX = parse_range("WORKER_GAP_RANGE", 5.0, 9.0)
 CYCLE_MIN, CYCLE_MAX = parse_range("CYCLE_INTERVAL_RANGE", 55.0, 70.0)
+
+# Browser Rendering Toggle (Defaults to "true")
+BROWSER_RENDERING = os.getenv("BROWSER_RENDERING", "true").strip().lower()
+
+# Default Referrers (Google, Facebook, and Internal app links)
+DEFAULT_REFERRERS = [
+    "https://app.bullpen.fi/",
+    "https://bullpen.fi/",
+    "https://www.google.com/",
+    "https://www.facebook.com/"
+]
+
+# Parsed Referrer Pool (Custom comma-separated list via env or defaults)
+REFERRERS = parse_referrers("REFERRERS", DEFAULT_REFERRERS)
 
 # Target slugs
 SLUGS = [
@@ -72,7 +95,7 @@ class ManagedKey:
 class KeyPoolManager:
     def __init__(self, raw_str: str):
         self.active_keys = []
-        self.dead_keys = []  # List of tuples: (ManagedKey, reason, death_timestamp)
+        self.dead_keys = []
         self.index = 0
 
         entries = [k.strip() for k in raw_str.split(",") if k.strip()]
@@ -91,13 +114,11 @@ class KeyPoolManager:
         return key
 
     def mark_dead(self, key_obj: ManagedKey, reason: str):
-        # Prevent race condition duplicates
         if key_obj in self.active_keys:
             self.active_keys.remove(key_obj)
             ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
             self.dead_keys.append((key_obj, reason, ts))
 
-            # Immediate alert banner
             print("\n" + "#" * 70)
             print(f" [PINNED ALERT] API KEY DIED / EXHAUSTED CREDITS")
             print(f"  Key Identifier : {key_obj.tag}")
@@ -107,7 +128,6 @@ class KeyPoolManager:
             print("#" * 70 + "\n")
 
     def print_pinned_status(self):
-        """Prints a summary so dead key statuses are never lost in logs."""
         if not self.dead_keys:
             return
         print("-" * 70)
@@ -127,7 +147,6 @@ def generate_cycle_links(worker_count: int):
     selected_slugs = random.sample(SLUGS, min(worker_count, len(SLUGS)))
     tasks = []
     for slug in selected_slugs:
-        # 86% via (?via=), 14% direct (/)
         if random.random() < 0.86:
             url = f"https://app.bullpen.fi?via={slug}"
             ltype = "VIA (?)"
@@ -162,21 +181,28 @@ def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype:
     params = {
         "x-api-key": key_obj.token,
         "url": target_url,
-        "browser": "false",
+        "browser": BROWSER_RENDERING,
         "proxy_country": code
     }
 
     url = f"https://api.scrapingant.com/v2/general?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "LightweightMonitor/1.0"})
+    
+    # Pick a random referrer on every request
+    chosen_referrer = random.choice(REFERRERS)
+    headers = {
+        "User-Agent": "LightweightMonitor/1.0",
+        "Ant-Referer": chosen_referrer
+    }
+
+    req = urllib.request.Request(url, headers=headers)
 
     try:
-        with urllib.request.urlopen(req, timeout=35) as resp:
-            print(f"[Bot-{bot_id}/{total_bots}] [{tier}-{label}] [{ltype} {slug}] [{key_obj.tag}] -> HTTP {resp.status} OK")
+        with urllib.request.urlopen(req, timeout=65) as resp:
+            print(f"[Bot-{bot_id}/{total_bots}] [{tier}-{label}] [{ltype} {slug}] [Ref: {chosen_referrer}] [{key_obj.tag}] -> HTTP {resp.status} OK")
 
     except urllib.error.HTTPError as e:
         raw_detail = e.read().decode("utf-8", errors="ignore")[:70].strip()
 
-        # Strict ScrapingAnt official evaluation: only 401 and 403 are fatal key errors
         if e.code in (401, 403):
             reason_msg = f"HTTP {e.code} Credits Exhausted / Invalid Token ({raw_detail})"
             pool.mark_dead(key_obj, reason_msg)
@@ -192,7 +218,6 @@ def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype:
     except Exception as ex:
         print(f"[Bot-{bot_id}] [{key_obj.tag}] [CLIENT ERROR]: {str(ex)}")
 
-    # Variable post-action gap so bots finish at different times
     time.sleep(random.uniform(GAP_MIN, GAP_MAX))
 
 
@@ -204,6 +229,8 @@ def main():
     print("      SCRAPING ENGINE INITIALIZED (RAILWAY/RENDER) ")
     print("==================================================")
     print(f"Total Active Keys    : {len(pool.active_keys)}")
+    print(f"Browser Rendering    : {BROWSER_RENDERING}")
+    print(f"Configured Referrers : {len(REFERRERS)}")
     print(f"Workers Per Cycle    : {int(WORKER_MIN)} - {int(WORKER_MAX)}")
     print(f"Worker Gap Range     : {GAP_MIN:.1f}s - {GAP_MAX:.1f}s")
     print(f"Cycle Duration Range : {CYCLE_MIN:.1f}s - {CYCLE_MAX:.1f}s")
@@ -213,7 +240,6 @@ def main():
 
     try:
         while True:
-            # Check if all keys have died
             if not pool.active_keys:
                 print("\n" + "!" * 70)
                 print(" [SHUTDOWN] ALL CONFIGURED KEYS ARE COMPLETELY DEAD / EXHAUSTED.")
@@ -239,11 +265,9 @@ def main():
                     )
                 concurrent.futures.wait(futures)
 
-            # Cycle interval sleep
             elapsed = time.time() - cycle_start
             wait_time = target_cycle_time - elapsed
 
-            # Reprint the pinned dead key summary at the end of each round
             pool.print_pinned_status()
 
             if wait_time > 0 and pool.active_keys:
