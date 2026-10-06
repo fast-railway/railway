@@ -35,16 +35,16 @@ def parse_list(var_name: str, defaults: list):
     return items if items else defaults
 
 
-# ScrapingAnt Credentials & Worker Settings
+# ScrapingAnt Credentials & Bot Behavior
 RAW_KEYS = os.getenv("SCRAPINGANT_API_KEYS", "Key1:6f88bd467966492d932576583925b36f")
 WORKER_MIN, WORKER_MAX = parse_range("WORKER_COUNT_RANGE", 3, 5)
 GAP_MIN, GAP_MAX = parse_range("WORKER_GAP_RANGE", 8.0, 14.0)
 CYCLE_MIN, CYCLE_MAX = parse_range("CYCLE_INTERVAL_RANGE", 50.0, 70.0)
 
-# Browser Rendering Toggle (Defaults to "true")
+# Browser Rendering Toggle
 BROWSER_RENDERING = os.getenv("BROWSER_RENDERING", "true").strip().lower()
 
-# Pure Authentic External Referrers (No internal self-referrals)
+# Pure Authentic External Referrers
 DEFAULT_REFERRERS = [
     "https://t.co/",
     "https://x.com/",
@@ -62,28 +62,28 @@ DEFAULT_REFERRERS = [
 ]
 REFERRERS = parse_list("REFERRERS", DEFAULT_REFERRERS)
 
-# Target Slugs (automatically generates both ? and / links)
+# Target Slugs
 SLUGS = [
     "jack", "6DNUvqf", "652HU1t", "tzlMgCf", "fNPZlqT",
     "bTi9oJs", "QMOvAAL", "OVMrJe2", "VQH8P3L", "xDVN1Bq", "CLfcNh1"
 ]
 
-# Optimized Country Pool: High-Trust Tier 1 + Selected Mid-Range (e.g. Brazil, Spain, Poland, Korea)
+# Country Pools (Core High-Trust + Mid-Range Variety)
 TIER_1_CORE = [
     ("US", "us"), ("DE", "de"), ("GB", "gb"), ("FR", "fr"),
     ("NL", "nl"), ("CA", "ca"), ("SE", "se")
 ]
 
 TIER_MID_RANGE = [
-    ("BR", "br"),  # Brazil
-    ("ES", "es"),  # Spain
-    ("IT", "it"),  # Italy
-    ("PL", "pl"),  # Poland
-    ("KR", "kr"),  # South Korea
-    ("JP", "jp"),  # Japan
-    ("SG", "sg"),  # Singapore
-    ("CZ", "cz"),  # Czech Republic
-    ("RO", "ro")   # Romania
+    ("BR", "br"),
+    ("ES", "es"),
+    ("IT", "it"),
+    ("PL", "pl"),
+    ("KR", "kr"),
+    ("JP", "jp"),
+    ("SG", "sg"),
+    ("CZ", "cz"),
+    ("RO", "ro")
 ]
 
 
@@ -150,20 +150,17 @@ pool = KeyPoolManager(RAW_KEYS)
 
 
 # ---------------------------------------------------------
-# Dynamic Links & Routing (Generates both ? and / links)
+# Dynamic Links & Routing
 # ---------------------------------------------------------
 def generate_cycle_links(worker_count: int):
-    # Allow overriding via LINKS environment variable if provided
     env_links = parse_list("LINKS", [])
     if env_links:
         count = min(worker_count, len(env_links))
         return [(url, "CUSTOM") for url in random.sample(env_links, count)]
 
-    # Otherwise generate dynamic ? and / routes from SLUGS
     selected_slugs = random.sample(SLUGS, min(worker_count, len(SLUGS)))
     tasks = []
     for slug in selected_slugs:
-        # 60% Query style (?via=), 40% Path style (/)
         if random.random() < 0.60:
             url = f"https://app.bullpen.fi?via={slug}"
             ltype = "QUERY (?)"
@@ -175,7 +172,6 @@ def generate_cycle_links(worker_count: int):
 
 
 def pick_country():
-    # 65% Core High-Trust, 35% Mid-Range Variety (Brazil, Spain, Poland, etc.)
     if random.random() < 0.65:
         tier_label, code = random.choice(TIER_1_CORE)
         return f"T1-{tier_label}", code
@@ -197,9 +193,7 @@ def execute_bot(bot_id: int, total_bots: int, target_url: str, ltype: str):
         "x-api-key": key_obj.token,
         "url": target_url,
         "browser": BROWSER_RENDERING,
-        "proxy_country": code,
-        # Browser wait to allow Cloudflare check to clear
-        "js_snippet": "await new Promise(r => setTimeout(r, 4500));"
+        "proxy_country": code
     }
 
     url = f"https://api.scrapingant.com/v2/general?{urllib.parse.urlencode(params)}"
@@ -235,7 +229,6 @@ def execute_bot(bot_id: int, total_bots: int, target_url: str, ltype: str):
     except Exception as ex:
         print(f"[Bot-{bot_id}] [{key_obj.tag}] [CLIENT ERROR]: {str(ex)}")
 
-    # Spacing between sequential bot executions to protect against concurrency limits
     gap = random.uniform(GAP_MIN, GAP_MAX)
     time.sleep(gap)
 
@@ -274,7 +267,6 @@ def main():
 
             print(f"\n--- [Cycle #{cycle_num}] Starting {len(tasks)} bots | Target: {target_cycle_time:.1f}s | Active Keys: {len(pool.active_keys)} ---")
 
-            # Sequential requests to adhere strictly to the 1-worker concurrency rule
             for idx, (target_url, ltype) in enumerate(tasks, start=1):
                 execute_bot(idx, len(tasks), target_url, ltype)
 
