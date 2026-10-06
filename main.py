@@ -1,4 +1,3 @@
-import concurrent.futures
 from datetime import datetime
 import json
 import os
@@ -28,7 +27,7 @@ def parse_range(var_name: str, default_min: float, default_max: float):
     return default_min, default_max
 
 
-def parse_referrers(var_name: str, defaults: list):
+def parse_list(var_name: str, defaults: list):
     raw_val = os.getenv(var_name, "").strip()
     if not raw_val:
         return defaults
@@ -38,43 +37,53 @@ def parse_referrers(var_name: str, defaults: list):
 
 # ScrapingAnt Credentials & Bot Behavior
 RAW_KEYS = os.getenv("SCRAPINGANT_API_KEYS", "Key1:6f88bd467966492d932576583925b36f")
-WORKER_MIN, WORKER_MAX = parse_range("WORKER_COUNT_RANGE", 6, 8)
-GAP_MIN, GAP_MAX = parse_range("WORKER_GAP_RANGE", 5.0, 9.0)
-CYCLE_MIN, CYCLE_MAX = parse_range("CYCLE_INTERVAL_RANGE", 55.0, 70.0)
+WORKER_MIN, WORKER_MAX = parse_range("WORKER_COUNT_RANGE", 3, 5)
+GAP_MIN, GAP_MAX = parse_range("WORKER_GAP_RANGE", 8.0, 14.0)
+CYCLE_MIN, CYCLE_MAX = parse_range("CYCLE_INTERVAL_RANGE", 50.0, 70.0)
 
-# Browser Rendering Toggle (Defaults to "true")
+# Browser Rendering Toggle
 BROWSER_RENDERING = os.getenv("BROWSER_RENDERING", "true").strip().lower()
 
-# Default Referrers (Google, Facebook, and Internal app links)
+# Pure Authentic External Referrers
 DEFAULT_REFERRERS = [
-    "https://app.bullpen.fi/",
-    "https://bullpen.fi/",
+    "https://t.co/",
+    "https://x.com/",
+    "https://l.facebook.com/",
+    "https://www.facebook.com/",
+    "https://l.instagram.com/",
+    "https://www.instagram.com/",
     "https://www.google.com/",
-    "https://www.facebook.com/"
+    "https://www.bing.com/",
+    "https://duckduckgo.com/",
+    "https://www.reddit.com/",
+    "https://web.telegram.org/",
+    "https://discord.com/",
+    "https://www.youtube.com/"
 ]
+REFERRERS = parse_list("REFERRERS", DEFAULT_REFERRERS)
 
-# Parsed Referrer Pool (Custom comma-separated list via env or defaults)
-REFERRERS = parse_referrers("REFERRERS", DEFAULT_REFERRERS)
-
-# Target slugs
+# Target Slugs
 SLUGS = [
     "jack", "6DNUvqf", "652HU1t", "tzlMgCf", "fNPZlqT",
     "bTi9oJs", "QMOvAAL", "OVMrJe2", "VQH8P3L", "xDVN1Bq", "CLfcNh1"
 ]
 
-# Verified ScrapingAnt Geographic Tiers
-TIER_1 = [
-    ("FR", "fr"), ("DE", "de"), ("NL", "nl"), ("ES", "es"),
-    ("IT", "it"), ("PL", "pl"), ("SE", "se"), ("BR", "br"),
-    ("KR", "kr"), ("TR", "tr"), ("VN", "vn"), ("ID", "id"),
-    ("CA", "ca"), ("JP", "jp"), ("SG", "sg")
+# Country Pools (Core High-Trust + Mid-Range Variety)
+TIER_1_CORE = [
+    ("US", "us"), ("DE", "de"), ("GB", "gb"), ("FR", "fr"),
+    ("NL", "nl"), ("CA", "ca"), ("SE", "se")
 ]
-TIER_2 = [
-    ("US", "us"), ("GB", "gb"), ("CZ", "cz"), ("RO", "ro"),
-    ("AE", "ae"), ("MX", "mx"), ("TH", "th"), ("PH", "ph")
-]
-TIER_3 = [
-    ("IN", "in"), ("SA", "sa"), ("HK", "hk"), ("TW", "tw")
+
+TIER_MID_RANGE = [
+    ("BR", "br"),
+    ("ES", "es"),
+    ("IT", "it"),
+    ("PL", "pl"),
+    ("KR", "kr"),
+    ("JP", "jp"),
+    ("SG", "sg"),
+    ("CZ", "cz"),
+    ("RO", "ro")
 ]
 
 
@@ -120,7 +129,7 @@ class KeyPoolManager:
             self.dead_keys.append((key_obj, reason, ts))
 
             print("\n" + "#" * 70)
-            print(f" [PINNED ALERT] API KEY DIED / EXHAUSTED CREDITS")
+            print(" [PINNED ALERT] API KEY DIED / EXHAUSTED CREDITS")
             print(f"  Key Identifier : {key_obj.tag}")
             print(f"  Death Time     : {ts}")
             print(f"  Confirmed Cause: {reason}")
@@ -144,40 +153,42 @@ pool = KeyPoolManager(RAW_KEYS)
 # Dynamic Links & Routing
 # ---------------------------------------------------------
 def generate_cycle_links(worker_count: int):
+    env_links = parse_list("LINKS", [])
+    if env_links:
+        count = min(worker_count, len(env_links))
+        return [(url, "CUSTOM") for url in random.sample(env_links, count)]
+
     selected_slugs = random.sample(SLUGS, min(worker_count, len(SLUGS)))
     tasks = []
     for slug in selected_slugs:
-        if random.random() < 0.86:
+        if random.random() < 0.60:
             url = f"https://app.bullpen.fi?via={slug}"
-            ltype = "VIA (?)"
+            ltype = "QUERY (?)"
         else:
-            url = f"https://go.bullpen.fi/{slug}"
-            ltype = "DIRECT (/)"
-        tasks.append((url, slug, ltype))
+            url = f"https://app.bullpen.fi/{slug}"
+            ltype = "PATH (/)"
+        tasks.append((url, ltype))
     return tasks
 
 
 def pick_country():
-    roll = random.random()
-    if roll < 0.50:
-        return "T1", *random.choice(TIER_1)
-    elif roll < 0.85:
-        return "T2", *random.choice(TIER_2)
+    if random.random() < 0.65:
+        tier_label, code = random.choice(TIER_1_CORE)
+        return f"T1-{tier_label}", code
     else:
-        return "T3", *random.choice(TIER_3)
+        tier_label, code = random.choice(TIER_MID_RANGE)
+        return f"MID-{tier_label}", code
 
 
 # ---------------------------------------------------------
 # Worker Bot Task
 # ---------------------------------------------------------
-def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype: str, stagger_delay: float):
-    time.sleep(stagger_delay)
-
+def execute_bot(bot_id: int, total_bots: int, target_url: str, ltype: str):
     key_obj = pool.get_key()
     if not key_obj:
         return
 
-    tier, label, code = pick_country()
+    label, code = pick_country()
     params = {
         "x-api-key": key_obj.token,
         "url": target_url,
@@ -186,22 +197,22 @@ def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype:
     }
 
     url = f"https://api.scrapingant.com/v2/general?{urllib.parse.urlencode(params)}"
-    
-    # Pick a random referrer on every request
     chosen_referrer = random.choice(REFERRERS)
+    
     headers = {
-        "User-Agent": "LightweightMonitor/1.0",
-        "Ant-Referer": chosen_referrer
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Ant-Referer": chosen_referrer,
+        "Ant-Referrer": chosen_referrer
     }
 
     req = urllib.request.Request(url, headers=headers)
 
     try:
-        with urllib.request.urlopen(req, timeout=65) as resp:
-            print(f"[Bot-{bot_id}/{total_bots}] [{tier}-{label}] [{ltype} {slug}] [Ref: {chosen_referrer}] [{key_obj.tag}] -> HTTP {resp.status} OK")
+        with urllib.request.urlopen(req, timeout=85) as resp:
+            print(f"[Bot-{bot_id}/{total_bots}] [{label}] [{ltype}] [Ref: {chosen_referrer}] [{key_obj.tag}] -> HTTP {resp.status} OK")
 
     except urllib.error.HTTPError as e:
-        raw_detail = e.read().decode("utf-8", errors="ignore")[:70].strip()
+        raw_detail = e.read().decode("utf-8", errors="ignore")[:75].strip()
 
         if e.code in (401, 403):
             reason_msg = f"HTTP {e.code} Credits Exhausted / Invalid Token ({raw_detail})"
@@ -218,7 +229,8 @@ def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype:
     except Exception as ex:
         print(f"[Bot-{bot_id}] [{key_obj.tag}] [CLIENT ERROR]: {str(ex)}")
 
-    time.sleep(random.uniform(GAP_MIN, GAP_MAX))
+    gap = random.uniform(GAP_MIN, GAP_MAX)
+    time.sleep(gap)
 
 
 # ---------------------------------------------------------
@@ -226,11 +238,11 @@ def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype:
 # ---------------------------------------------------------
 def main():
     print("==================================================")
-    print("      SCRAPING ENGINE INITIALIZED (RAILWAY/RENDER) ")
+    print("      SCRAPING ENGINE INITIALIZED (OPTIMIZED)     ")
     print("==================================================")
     print(f"Total Active Keys    : {len(pool.active_keys)}")
     print(f"Browser Rendering    : {BROWSER_RENDERING}")
-    print(f"Configured Referrers : {len(REFERRERS)}")
+    print(f"Active Referrers     : {len(REFERRERS)}")
     print(f"Workers Per Cycle    : {int(WORKER_MIN)} - {int(WORKER_MAX)}")
     print(f"Worker Gap Range     : {GAP_MIN:.1f}s - {GAP_MAX:.1f}s")
     print(f"Cycle Duration Range : {CYCLE_MIN:.1f}s - {CYCLE_MAX:.1f}s")
@@ -244,7 +256,6 @@ def main():
                 print("\n" + "!" * 70)
                 print(" [SHUTDOWN] ALL CONFIGURED KEYS ARE COMPLETELY DEAD / EXHAUSTED.")
                 pool.print_pinned_status()
-                print(" Process exiting now. Update SCRAPINGANT_API_KEYS to resume.")
                 print("!" * 70 + "\n")
                 sys.exit(0)
 
@@ -252,18 +263,12 @@ def main():
             worker_count = random.randint(int(WORKER_MIN), int(WORKER_MAX))
             target_cycle_time = random.uniform(CYCLE_MIN, CYCLE_MAX)
 
-            print(f"\n--- [Cycle #{cycle_num}] Starting {worker_count} bots | Target: {target_cycle_time:.1f}s | Active Keys: {len(pool.active_keys)} ---")
-
             tasks = generate_cycle_links(worker_count)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-                futures = []
-                for idx, (url, slug, ltype) in enumerate(tasks):
-                    stagger = idx * random.uniform(GAP_MIN, GAP_MAX)
-                    futures.append(
-                        executor.submit(execute_bot, idx + 1, worker_count, url, slug, ltype, stagger)
-                    )
-                concurrent.futures.wait(futures)
+            print(f"\n--- [Cycle #{cycle_num}] Starting {len(tasks)} bots | Target: {target_cycle_time:.1f}s | Active Keys: {len(pool.active_keys)} ---")
+
+            for idx, (target_url, ltype) in enumerate(tasks, start=1):
+                execute_bot(idx, len(tasks), target_url, ltype)
 
             elapsed = time.time() - cycle_start
             wait_time = target_cycle_time - elapsed
